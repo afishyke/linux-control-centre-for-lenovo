@@ -14,6 +14,82 @@ import subprocess
 import json
 import psutil
 import platform
+import shutil
+
+class GPUController:
+    def __init__(self):
+        self.gpu_info = {}
+        self.detect_gpu()
+
+    def detect_gpu(self):
+        """Detect GPU and its properties"""
+        if shutil.which('nvidia-smi'):
+            self.gpu_info['vendor'] = 'NVIDIA'
+            self.update_nvidia_info()
+        elif os.path.exists('/sys/class/drm/card0/device/vendor') and \
+             os.path.exists('/sys/class/drm/card0/device/power_dpm_force_performance_level'):
+            self.gpu_info['vendor'] = 'AMD'
+            self.update_amd_info()
+        else:
+            self.gpu_info['vendor'] = 'Intel' # or other
+            self.update_intel_info()
+
+    def update_nvidia_info(self):
+        try:
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=name,temperature.gpu,utilization.gpu,memory.total,memory.used', '--format=csv,noheader,nounits'],
+                capture_output=True, text=True, check=True
+            )
+            values = result.stdout.strip().split(', ')
+            self.gpu_info['name'] = values[0]
+            self.gpu_info['temperature'] = int(values[1])
+            self.gpu_info['usage'] = int(values[2])
+            self.gpu_info['memory_total'] = int(values[3])
+            self.gpu_info['memory_used'] = int(values[4])
+        except (subprocess.CalledProcessError, FileNotFoundError, IndexError) as e:
+            print(f"Could not get NVIDIA info: {e}")
+
+    def update_amd_info(self):
+        try:
+            # Temperature
+            with open('/sys/class/drm/card0/device/hwmon/hwmon*/temp1_input', 'r') as f:
+                self.gpu_info['temperature'] = int(f.read().strip()) / 1000
+            # Usage
+            with open('/sys/class/drm/card0/device/gpu_busy_percent', 'r') as f:
+                self.gpu_info['usage'] = int(f.read().strip())
+            # Power DPM performance level
+            with open('/sys/class/drm/card0/device/power_dpm_force_performance_level', 'r') as f:
+                self.gpu_info['performance_level'] = f.read().strip()
+        except (FileNotFoundError, IndexError) as e:
+            print(f"Could not get AMD info: {e}")
+
+    def update_intel_info(self):
+        # Intel GPU info is harder to get, placeholder
+        self.gpu_info['name'] = "Intel Integrated Graphics"
+        self.gpu_info['temperature'] = "N/A"
+        self.gpu_info['usage'] = "N/A"
+
+    def get_gpu_info(self):
+        if self.gpu_info.get('vendor') == 'NVIDIA':
+            self.update_nvidia_info()
+        elif self.gpu_info.get('vendor') == 'AMD':
+            self.update_amd_info()
+        return self.gpu_info
+
+    def set_amd_performance_level(self, level):
+        if self.gpu_info.get('vendor') != 'AMD':
+            return False, "Not an AMD GPU"
+        
+        valid_levels = ['auto', 'low', 'high', 'manual']
+        if level not in valid_levels:
+            return False, f"Invalid performance level. Valid levels are: {valid_levels}"
+
+        try:
+            cmd = f"echo {level} | pkexec tee /sys/class/drm/card0/device/power_dpm_force_performance_level"
+            subprocess.run(cmd, shell=True, check=True)
+            return True, f"AMD performance level set to {level}"
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            return False, f"Failed to set AMD performance level: {e}"
 
 class FanController:
     def __init__(self):
@@ -260,12 +336,87 @@ class FanController:
         except Exception as e:
             return False, f"Error setting fan mode: {str(e)}"
 
+class GPUControlWidget(QWidget):
+    def __init__(self, gpu_controller):
+        super().__init__()
+        self.gpu_controller = gpu_controller
+        self.init_ui()
+        self.update_gpu_info()
+
+    def init_ui(self):
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+
+        # GPU Info Card
+        info_card = QGroupBox("🎮 GPU Information")
+        info_layout = QGridLayout()
+        info_layout.setSpacing(16)
+
+        self.gpu_name_label = QLabel("N/A")
+        self.gpu_temp_label = QLabel("N/A")
+        self.gpu_usage_label = QLabel("N/A")
+        self.gpu_memory_label = QLabel("N/A")
+
+        info_layout.addWidget(QLabel("GPU Name:"), 0, 0)
+        info_layout.addWidget(self.gpu_name_label, 0, 1)
+        info_layout.addWidget(QLabel("Temperature:"), 1, 0)
+        info_layout.addWidget(self.gpu_temp_label, 1, 1)
+        info_layout.addWidget(QLabel("Usage:"), 2, 0)
+        info_layout.addWidget(self.gpu_usage_label, 2, 1)
+        info_layout.addWidget(QLabel("Memory:"), 3, 0)
+        info_layout.addWidget(self.gpu_memory_label, 3, 1)
+
+        info_card.setLayout(info_layout)
+        main_layout.addWidget(info_card)
+
+        # GPU Control Card
+        control_card = QGroupBox("🔧 GPU Controls")
+        control_layout = QVBoxLayout()
+        control_layout.setSpacing(16)
+
+        if self.gpu_controller.gpu_info.get('vendor') == 'AMD':
+            self.amd_power_level_combo = QComboBox()
+            self.amd_power_level_combo.addItems(['auto', 'low', 'high'])
+            apply_btn = QPushButton("Apply Performance Level")
+            apply_btn.clicked.connect(self.apply_amd_performance_level)
+            control_layout.addWidget(QLabel("AMD PowerPlay Level:"))
+            control_layout.addWidget(self.amd_power_level_combo)
+            control_layout.addWidget(apply_btn)
+        else:
+            control_layout.addWidget(QLabel("No controls available for this GPU."))
+
+        control_card.setLayout(control_layout)
+        main_layout.addWidget(control_card)
+
+        main_layout.addStretch()
+        self.setLayout(main_layout)
+
+    def update_gpu_info(self):
+        gpu_info = self.gpu_controller.get_gpu_info()
+        self.gpu_name_label.setText(gpu_info.get('name', 'N/A'))
+        self.gpu_temp_label.setText(f"{gpu_info.get('temperature', 'N/A')} °C")
+        self.gpu_usage_label.setText(f"{gpu_info.get('usage', 'N/A')} %")
+        if gpu_info.get('vendor') == 'NVIDIA':
+            self.gpu_memory_label.setText(f"{gpu_info.get('memory_used', 'N/A')} / {gpu_info.get('memory_total', 'N/A')} MiB")
+        else:
+            self.gpu_memory_label.setText("N/A")
+
+    def apply_amd_performance_level(self):
+        level = self.amd_power_level_combo.currentText()
+        success, message = self.gpu_controller.set_amd_performance_level(level)
+        if success:
+            QMessageBox.information(self, "Success", message)
+        else:
+            QMessageBox.critical(self, "Error", message)
+
 class SystemInfoThread(QThread):
     data_updated = pyqtSignal(dict)
     
     def __init__(self):
         super().__init__()
         self.fan_controller = FanController()
+        self.gpu_controller = GPUController()
     
     def run(self):
         while True:
@@ -278,7 +429,8 @@ class SystemInfoThread(QThread):
                     'temperatures': psutil.sensors_temperatures(),
                     'fans': self.fan_controller.get_current_fan_speeds(),
                     'fan_info': self.fan_controller.fan_info,
-                    'controllable_fans': self.fan_controller.controllable_fans
+                    'controllable_fans': self.fan_controller.controllable_fans,
+                    'gpu_info': self.gpu_controller.get_gpu_info()
                 }
                 self.data_updated.emit(system_info)
             except Exception as e:
@@ -324,6 +476,12 @@ class SystemInfoWidget(QWidget):
         self.battery_usage = battery_card['progress']
         self.battery_value_label = battery_card['value']
         overview_layout.addWidget(battery_card['widget'], 1, 1)
+
+        # GPU Card
+        gpu_card = self.create_metric_card("🎮 GPU", "gpu")
+        self.gpu_usage = gpu_card['progress']
+        self.gpu_value_label = gpu_card['value']
+        overview_layout.addWidget(gpu_card['widget'], 2, 0, 1, 2)
         
         overview_group.setLayout(overview_layout)
         main_layout.addWidget(overview_group)
@@ -501,6 +659,16 @@ class SystemInfoWidget(QWidget):
         else:
             self.battery_usage.setValue(0)
             self.battery_value_label.setText("Not Available")
+
+        # Update GPU
+        gpu_info = data.get('gpu_info', {})
+        if gpu_info and gpu_info.get('usage') is not None and gpu_info.get('usage') != 'N/A':
+            gpu_usage = int(gpu_info['usage'])
+            self.gpu_usage.setValue(gpu_usage)
+            self.gpu_value_label.setText(f"{gpu_usage}% Usage")
+        else:
+            self.gpu_usage.setValue(0)
+            self.gpu_value_label.setText("N/A")
         
         # Update Temperatures
         temps = data['temperatures']
@@ -1481,6 +1649,7 @@ class LenovoControlCenter(QMainWindow):
         self.tab_widget.addTab(SystemInfoWidget(), "System Info")
         self.tab_widget.addTab(BatteryControlWidget(), "Battery")
         self.tab_widget.addTab(PowerControlWidget(), "Power & Display")
+        self.tab_widget.addTab(GPUControlWidget(self.monitor_thread.gpu_controller), "GPU")
         
         layout.addWidget(self.tab_widget)
         
