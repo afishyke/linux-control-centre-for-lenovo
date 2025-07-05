@@ -12,19 +12,20 @@ if [ -z "$DISPLAY" ]; then
     export DISPLAY=:0
 fi
 
-# Check dependencies
-if ! command -v python3 &> /dev/null; then
-    echo "Error: Python 3 is required but not installed."
-    exit 1
+# Check if virtual environment exists
+if [ ! -d "lenovo-venv" ]; then
+    echo "Creating virtual environment..."
+    python3 -m venv lenovo-venv
+    echo "Installing dependencies..."
+    source lenovo-venv/bin/activate
+    pip install PyQt6 psutil
+    deactivate
 fi
 
-if ! python3 -c "import psutil" &> /dev/null; then
-    echo "Installing required dependencies..."
-    pip3 install psutil
-fi
-
-# Launch the application
+# Activate virtual environment and launch
 echo "Launching Lenovo Control Center..."
-python3 main_tkinter.py
+source lenovo-venv/bin/activate
+python main.py
+deactivate
 
 echo "Lenovo Control Center closed."
