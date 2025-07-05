@@ -2,7 +2,7 @@
 
 A comprehensive system control and monitoring application for Lenovo laptops running Linux, with a modern and intuitive UI built with PyQt6.
 
-![Screenshot](https://i.imgur.com/your-screenshot.png)  <!-- Replace with a real screenshot -->
+![Screenshot](https://freeimage.host/i/FlA0MZP)  <!-- Replace with a real screenshot -->
 
 ## Features
 
