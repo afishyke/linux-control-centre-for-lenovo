@@ -59,3 +59,4 @@ logs/
 *.tmp
 *.temp
 .cache/lenovo-venv/
+lenovo-venv/

@@ -42,26 +42,60 @@ class GPUController:
             )
             values = result.stdout.strip().split(', ')
             self.gpu_info['name'] = values[0]
-            self.gpu_info['temperature'] = int(values[1])
-            self.gpu_info['usage'] = int(values[2])
-            self.gpu_info['memory_total'] = int(values[3])
-            self.gpu_info['memory_used'] = int(values[4])
+            
+            # Handle N/A values safely
+            try:
+                self.gpu_info['temperature'] = int(values[1]) if values[1] != '[N/A]' else 0
+            except (ValueError, IndexError):
+                self.gpu_info['temperature'] = 0
+                
+            try:
+                self.gpu_info['usage'] = int(values[2]) if values[2] != '[N/A]' else 0
+            except (ValueError, IndexError):
+                self.gpu_info['usage'] = 0
+                
+            try:
+                self.gpu_info['memory_total'] = int(values[3]) if values[3] != '[N/A]' else 0
+            except (ValueError, IndexError):
+                self.gpu_info['memory_total'] = 0
+                
+            try:
+                self.gpu_info['memory_used'] = int(values[4]) if values[4] != '[N/A]' else 0
+            except (ValueError, IndexError):
+                self.gpu_info['memory_used'] = 0
+                
         except (subprocess.CalledProcessError, FileNotFoundError, IndexError) as e:
             print(f"Could not get NVIDIA info: {e}")
 
     def update_amd_info(self):
         try:
             # Temperature
-            with open('/sys/class/drm/card0/device/hwmon/hwmon*/temp1_input', 'r') as f:
-                self.gpu_info['temperature'] = int(f.read().strip()) / 1000
+            temp_files = glob.glob('/sys/class/drm/card0/device/hwmon/hwmon*/temp1_input')
+            if temp_files:
+                with open(temp_files[0], 'r') as f:
+                    self.gpu_info['temperature'] = int(f.read().strip()) / 1000
+            else:
+                self.gpu_info['temperature'] = 0
+            
             # Usage
-            with open('/sys/class/drm/card0/device/gpu_busy_percent', 'r') as f:
-                self.gpu_info['usage'] = int(f.read().strip())
+            if os.path.exists('/sys/class/drm/card0/device/gpu_busy_percent'):
+                with open('/sys/class/drm/card0/device/gpu_busy_percent', 'r') as f:
+                    self.gpu_info['usage'] = int(f.read().strip())
+            else:
+                self.gpu_info['usage'] = 0
+            
             # Power DPM performance level
-            with open('/sys/class/drm/card0/device/power_dpm_force_performance_level', 'r') as f:
-                self.gpu_info['performance_level'] = f.read().strip()
-        except (FileNotFoundError, IndexError) as e:
+            if os.path.exists('/sys/class/drm/card0/device/power_dpm_force_performance_level'):
+                with open('/sys/class/drm/card0/device/power_dpm_force_performance_level', 'r') as f:
+                    self.gpu_info['performance_level'] = f.read().strip()
+            else:
+                self.gpu_info['performance_level'] = 'N/A'
+                
+        except (FileNotFoundError, IndexError, ValueError) as e:
             print(f"Could not get AMD info: {e}")
+            self.gpu_info['temperature'] = 0
+            self.gpu_info['usage'] = 0
+            self.gpu_info['performance_level'] = 'N/A'
 
     def update_intel_info(self):
         # Intel GPU info is harder to get, placeholder
@@ -452,6 +486,7 @@ class SystemInfoWidget(QWidget):
         overview_group = QGroupBox("📊 System Overview")
         overview_layout = QGridLayout()
         overview_layout.setSpacing(16)
+        overview_layout.setContentsMargins(16, 20, 16, 16)
         
         # CPU Card
         cpu_card = self.create_metric_card("🖥️ CPU", "processor")
@@ -465,6 +500,12 @@ class SystemInfoWidget(QWidget):
         self.memory_value_label = memory_card['value']
         overview_layout.addWidget(memory_card['widget'], 0, 1)
         
+        # GPU Card - moved to top row, third column
+        gpu_card = self.create_metric_card("🎮 GPU", "gpu")
+        self.gpu_usage = gpu_card['progress']
+        self.gpu_value_label = gpu_card['value']
+        overview_layout.addWidget(gpu_card['widget'], 0, 2)
+        
         # Disk Card
         disk_card = self.create_metric_card("💾 Storage", "disk")
         self.disk_usage = disk_card['progress']
@@ -477,28 +518,33 @@ class SystemInfoWidget(QWidget):
         self.battery_value_label = battery_card['value']
         overview_layout.addWidget(battery_card['widget'], 1, 1)
 
-        # GPU Card
-        gpu_card = self.create_metric_card("🎮 GPU", "gpu")
-        self.gpu_usage = gpu_card['progress']
-        self.gpu_value_label = gpu_card['value']
-        overview_layout.addWidget(gpu_card['widget'], 2, 0, 1, 2)
+        # Add empty widget to maintain spacing
+        empty_widget = QWidget()
+        empty_widget.setFixedHeight(140)
+        overview_layout.addWidget(empty_widget, 1, 2)
+        
+        # Set column stretch to ensure even spacing
+        overview_layout.setColumnStretch(0, 1)
+        overview_layout.setColumnStretch(1, 1)
+        overview_layout.setColumnStretch(2, 1)
         
         overview_group.setLayout(overview_layout)
         main_layout.addWidget(overview_group)
         
         # Temperature and Fan Info Row
         info_layout = QHBoxLayout()
-        info_layout.setSpacing(16)
+        info_layout.setSpacing(20)
+        info_layout.setContentsMargins(0, 10, 0, 0)
         
         # Temperature Info
         temp_group = QGroupBox("🌡️ Temperatures")
         temp_layout = QVBoxLayout()
-        temp_layout.setContentsMargins(12, 15, 12, 12)
-        temp_layout.setSpacing(8)
+        temp_layout.setContentsMargins(16, 20, 16, 16)
+        temp_layout.setSpacing(10)
         
         self.temp_text = QTextEdit()
-        self.temp_text.setMaximumHeight(110)
-        self.temp_text.setMinimumHeight(110)
+        self.temp_text.setMaximumHeight(120)
+        self.temp_text.setMinimumHeight(120)
         self.temp_text.setReadOnly(True)
         self.temp_text.setStyleSheet("""
             QTextEdit {
@@ -508,7 +554,7 @@ class SystemInfoWidget(QWidget):
                 color: #ffffff;
                 font-family: 'Segoe UI', sans-serif;
                 font-size: 13px;
-                padding: 8px;
+                padding: 12px;
                 line-height: 1.4;
             }
         """)
@@ -520,12 +566,12 @@ class SystemInfoWidget(QWidget):
         # Fan Info
         fan_group = QGroupBox("🌀 Fan Information")
         fan_layout = QVBoxLayout()
-        fan_layout.setContentsMargins(12, 15, 12, 12)
-        fan_layout.setSpacing(8)
+        fan_layout.setContentsMargins(16, 20, 16, 16)
+        fan_layout.setSpacing(10)
         
         self.fan_text = QTextEdit()
-        self.fan_text.setMaximumHeight(110)
-        self.fan_text.setMinimumHeight(110)
+        self.fan_text.setMaximumHeight(120)
+        self.fan_text.setMinimumHeight(120)
         self.fan_text.setReadOnly(True)
         self.fan_text.setStyleSheet("""
             QTextEdit {
@@ -535,7 +581,7 @@ class SystemInfoWidget(QWidget):
                 color: #ffffff;
                 font-family: 'Segoe UI', sans-serif;
                 font-size: 13px;
-                padding: 8px;
+                padding: 12px;
                 line-height: 1.4;
             }
         """)
@@ -1646,10 +1692,11 @@ class LenovoControlCenter(QMainWindow):
         self.tab_widget = QTabWidget()
         
         # Add tabs
-        self.tab_widget.addTab(SystemInfoWidget(), "System Info")
+        self.system_info_widget = SystemInfoWidget()
+        self.tab_widget.addTab(self.system_info_widget, "System Info")
         self.tab_widget.addTab(BatteryControlWidget(), "Battery")
         self.tab_widget.addTab(PowerControlWidget(), "Power & Display")
-        self.tab_widget.addTab(GPUControlWidget(self.monitor_thread.gpu_controller), "GPU")
+        self.tab_widget.addTab(GPUControlWidget(self.system_info_widget.monitor_thread.gpu_controller), "GPU")
         
         layout.addWidget(self.tab_widget)
         
@@ -1725,12 +1772,10 @@ class LenovoControlCenter(QMainWindow):
             
             QPushButton:hover {
                 background-color: #106ebe;
-                transform: translateY(-1px);
             }
             
             QPushButton:pressed {
                 background-color: #005a9e;
-                transform: translateY(0px);
             }
             
             QPushButton:disabled {
